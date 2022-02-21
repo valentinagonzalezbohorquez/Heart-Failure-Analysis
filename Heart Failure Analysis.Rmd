@@ -1,0 +1,262 @@
+---
+title: "Heart Failure Analysis"
+author: "Valentina Gonzalez Bohorquez"
+date: "5/10/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Project Aim
+#### To choose the best model to accurately predict mortality caused by Heart Failure. The models we created were logistic regression, K-Nearest Neighbors, and Random Forest. 
+
+# I. Introduction
+Cardiovascular diseases are the number 1 cause of death, accounting for 31% of deaths globally. Most cardiovascular diseases can be prevented through lifestyle improvements, such as proper diet, exercise, as well as limited tobacco and alcohol intake. Machine Learning can play an essential role in predicting presence, or absence of cardiovascular diseases and more. Such information, if predicted well in advance, can provide important insights to doctors who can then adapt their diagnosis and treatment per patient basis.
+
+# II. Dataset
+
+This binary classification dataset contains 12 features that can be used to predict mortality by heart failure.
+
+
+```{r out.width = "90%", fig.align = "center", echo = FALSE}
+knitr::include_graphics("/Users/valentinagonzalez/Desktop/heartfailure.png")
+```
+
+# III. Data Analytic Strategy
+
+Load the libraries.
+
+```{r}
+library("caret")
+library("class")
+library("faraway")
+library("InformationValue")
+library("leaps")
+library("randomForest")
+library("caTools")
+library("tidyverse")
+library("pROC")
+```
+
+## Load the dataset.
+```{r}
+heart_disease <- read.csv("~/Documents/Second Semester/Stat Mod & Comp/Final Project/heart_failure_clinical_records_dataset.csv")
+```
+
+## Use the summary function for viewing metrics related to our data.
+```{r}
+summary(heart_disease)
+```
+Upon closer analysis, an issue with the column types is detected. In R, a categorical variable is a factor. However, summary(heart_disease) revealed that "sex" was incorrectly treated as a number, as opposed to a factor (0 = Female, 1 = Male).
+
+## Use the sapply function to view each column type.
+
+```{r}
+sapply(heart_disease, class)
+```
+
+## Use the transform function to change the in-built type of each feature.
+
+```{r}
+heart_disease <- transform(
+  heart_disease,
+  age=as.integer(age),
+  sex=as.factor(sex),
+  diabetes=as.factor(diabetes),
+  anaemia=as.factor(anaemia),
+  high_blood_pressure=as.factor(high_blood_pressure),
+  smoking=as.factor(smoking),
+  DEATH_EVENT=as.factor(DEATH_EVENT)
+)
+```
+
+## View the corrected column types.
+```{r}
+sapply(heart_disease, class)
+summary(heart_disease)
+```
+
+## Split the data into train and test.
+```{r}
+trainIndex <- createDataPartition(heart_disease$DEATH_EVENT, p=0.70, list=FALSE, times=1)
+
+heart_disease_train <- heart_disease[trainIndex,]
+heart_disease_test <- heart_disease[-trainIndex,]
+```
+
+## BIC Model Selection
+```{r}
+heart_disease_train_BIC <- regsubsets(DEATH_EVENT ~ ., data=heart_disease_train)
+heart_disease_train_BIC_sum <- summary(heart_disease_train_BIC)
+heart_disease_train_BIC_sum$which
+
+plot(heart_disease_train_BIC_sum$bic, ylab="BIC", xlab="Number of Predictors")
+```
+Through the Bayesian Information Criterion (BIC), we choose the parameters to create the models. BIC can measure the efficiency of the parameterized model in terms of predicting the data. Limiting the model to statistically sufficient variables can improve prediction accuracy. Additionally, it is computationally cheaper in the end. For this dataset, the minimum BIC occurs when there are 3 predictors: ejection_fraction, serum_creatinine, and time.
+
+# IV. Predictive Models and Results
+
+## Logistic Regression Model
+```{r}
+lmod_heart_disease <- glm(DEATH_EVENT ~ ejection_fraction + serum_creatinine + time,
+                          family=binomial, heart_disease_train)
+summary(lmod_heart_disease)
+```
+Created a logistic regression model with the parameters ejection_fraction, serum_creatinine, and time. The 'summary' function revealed a null deviance of 256.56  on 209  degrees of freedom, a residual deviance of 161.96  on 206  degrees of freedom, and a AIC of 169.96.
+
+## Prediction
+```{r}
+lmod_heart_disease_prob <- predict(lmod_heart_disease, heart_disease_test, type="response")
+optCutoff <- optimalCutoff(heart_disease_test$DEATH_EVENT,lmod_heart_disease_prob)
+
+heart_disease_test_pred_lmod <- heart_disease_test %>%
+  mutate(predict=1*(lmod_heart_disease_prob > optCutoff)) %>%
+  mutate(accurate=1*(predict==DEATH_EVENT))
+lmod_acc <- sum(heart_disease_test_pred_lmod$accurate)/nrow(heart_disease_test_pred_lmod)
+
+```
+The 'optimalCutoff' determines the optimal decision threshold for the logistic model. In this case, it was 0.3696721. Moreover, we measured the accuracy of the model by adding the taking the heart failure test prediction accuracy divided by the number of rows. The accuracy of the Logistic model was about 83.15%.
+
+## Creating the Logistic confusion matrix.
+```{r}
+confusion_matrix_lmod <- as.data.frame(table(heart_disease_test_pred_lmod$DEATH_EVENT,heart_disease_test_pred_lmod$predict))
+confusion_matrix_lmod$Var1 <- as.character(confusion_matrix_lmod$Var1)
+confusion_matrix_lmod$Var2 <- as.character(confusion_matrix_lmod$Var2)
+confusion_matrix_lmod$Var1[confusion_matrix_lmod$Var1 == 0] <- "Survived"
+confusion_matrix_lmod$Var1[confusion_matrix_lmod$Var1 == 1] <- "Died"
+confusion_matrix_lmod$Var2[confusion_matrix_lmod$Var2 == 0] <- "Survived"
+confusion_matrix_lmod$Var2[confusion_matrix_lmod$Var2 == 1] <- "Died"
+```
+
+```{r, eval=TRUE, echo=FALSE}
+ggplot(data=confusion_matrix_lmod, mapping=aes(x=Var1,y=Var2)) +
+  geom_tile(aes(fill=Freq), color = "white") +
+  geom_text(aes(label=sprintf("%1.0f", Freq)), vjust=1) +
+  scale_fill_gradient(low="steelblue", high="red") +
+  theme_bw() + theme(legend.position="none") +
+  xlab("Predicted") + ylab("Actual") + ggtitle("Predicted versus Actual - Logistic Regression")
+```
+
+## K-Nearest Neighbors Model
+```{r}
+heart_disease_train_filtered_x <- heart_disease_train %>%
+  select(ejection_fraction,serum_creatinine,time)
+heart_disease_train_filtered_y <- heart_disease_train$DEATH_EVENT
+heart_disease_test_filtered_x <- heart_disease_test %>%
+  select(ejection_fraction,serum_creatinine,time)
+heart_disease_test_filtered_y <- heart_disease_test$DEATH_EVENT
+```
+Selecting the same parameters as the logistic model (ejection_fraction, serum_creatinine, and time), filtered the train and test data.
+
+## Calculating the error.
+```{r}
+calc_error <- function(actual, predicted){
+  error <- mean(actual != predicted)
+  return(error)
+}
+```
+
+## Determining k and finding the minimum error.
+```{r}
+ks = 1:20
+errors <- rep(x=0, times=length(ks))
+
+for (i in seq_along(ks)) {
+  prediction <- knn(train=heart_disease_train_filtered_x,
+                    test=heart_disease_test_filtered_x,
+                    cl=heart_disease_train_filtered_y,
+                    k=ks[i])
+  errors[i] <- calc_error(heart_disease_test_filtered_y, prediction)
+}
+
+plot(errors, type = "b", col = "dodgerblue", cex = 1, pch = 20, 
+     xlab = "k, Number of Neighbors", ylab = "Classification Error",
+     main = "(Test) Error Rate vs Neighbors")
+abline(h = min(errors), col = "darkorange", lty = 3)
+
+min(errors)
+k <- which(errors == min(errors))
+k
+```
+At first, we determined the k value through the square root of n method, which gave k ~ 17. However, this method gave a lower prediction accuracy (around 70%). Therefore, we decided to choose k based on a train/test approach, fitting KNN models for k between 1 and 20, and choosing the k with the minimum classification error rate, with k = 6 and error rate of about 13%.
+
+## Creating the KNN model.
+```{r}
+heart_disease_knn <- knn(train=heart_disease_train_filtered_x,
+                         test=heart_disease_test_filtered_x,
+                         cl=heart_disease_train_filtered_y,
+                         k=k)
+knn_acc <- 1-calc_error(heart_disease_test_filtered_y,heart_disease_knn)
+```
+Used the 'knn' function to create the KNN model. The accuracy of the KNN model was about 86.52%.
+
+## Creating the KNN confusion matrix.
+```{r}
+confusion_matrix_knn <- as.data.frame(table(heart_disease_test_filtered_y,heart_disease_knn))
+confusion_matrix_knn$heart_disease_test_filtered_y <- as.character(confusion_matrix_knn$heart_disease_test_filtered_y)
+confusion_matrix_knn$heart_disease_knn <- as.character(confusion_matrix_knn$heart_disease_knn)
+confusion_matrix_knn$heart_disease_test_filtered_y[confusion_matrix_knn$heart_disease_test_filtered_y == 0] <- "Survived"
+confusion_matrix_knn$heart_disease_test_filtered_y[confusion_matrix_knn$heart_disease_test_filtered_y == 1] <- "Died"
+confusion_matrix_knn$heart_disease_knn[confusion_matrix_knn$heart_disease_knn == 0] <- "Survived"
+confusion_matrix_knn$heart_disease_knn[confusion_matrix_knn$heart_disease_knn == 1] <- "Died"
+```
+
+```{r, eval=TRUE, echo=FALSE}
+ggplot(data=confusion_matrix_knn, mapping=aes(x=heart_disease_knn,y=heart_disease_test_filtered_y)) +
+  geom_tile(aes(fill=Freq), color = "white") +
+  geom_text(aes(label=sprintf("%1.0f", Freq)), vjust=1) +
+  scale_fill_gradient(low="steelblue", high="red") +
+  theme_bw() + theme(legend.position="none") +
+  xlab("Predicted") + ylab("Actual") + ggtitle("Predicted versus Actual - KNN")
+```
+
+## Random Forest Model
+
+## Creating the Random Forest model.
+```{r}
+random_forest_model <- randomForest(formula=as.factor(DEATH_EVENT) ~ ejection_fraction + serum_creatinine + time, data=heart_disease_train)
+```
+Utilized the 'randomForest' function to create the Random Forest Model.
+
+## Prediction
+```{r}
+heart_disease_test_pred_rf <- heart_disease_test %>%
+  mutate(pred = predict(random_forest_model, heart_disease_test))%>%
+  mutate(accurate=1*(pred==DEATH_EVENT))
+rf_acc <- sum(heart_disease_test_pred_rf$accurate)/nrow(heart_disease_test_pred_rf)
+```
+The accuracy of the Random Forest model was about 87.64%.
+
+## Creating the confusion matrix.
+```{r}
+confusion_matrix_rf <- as.data.frame(table(heart_disease_test_pred_rf$DEATH_EVENT,heart_disease_test_pred_rf$pred))
+confusion_matrix_rf$Var1 <- as.character(confusion_matrix_rf$Var1)
+confusion_matrix_rf$Var2 <- as.character(confusion_matrix_rf$Var2)
+confusion_matrix_rf$Var1[confusion_matrix_rf$Var1 == 0] <- "Survived"
+confusion_matrix_rf$Var1[confusion_matrix_rf$Var1 == 1] <- "Died"
+confusion_matrix_rf$Var2[confusion_matrix_rf$Var2 == 0] <- "Survived"
+confusion_matrix_rf$Var2[confusion_matrix_rf$Var2 == 1] <- "Died"
+```
+
+```{r, eval=TRUE, echo=FALSE}
+ggplot(data=confusion_matrix_rf, mapping=aes(x=Var1,y=Var2)) +
+  geom_tile(aes(fill=Freq), color = "white") +
+  geom_text(aes(label=sprintf("%1.0f", Freq)), vjust=1) +
+  scale_fill_gradient(low="steelblue", high="red") +
+  theme_bw() + theme(legend.position="none") +
+  xlab("Predicted") + ylab("Actual") + ggtitle("Predicted versus Actual - Random Forest")
+```
+
+# V. Conclusions
+
+## ROC Curbs
+```{r, eval=TRUE, echo=FALSE}
+lrROC <- roc(heart_disease_test_pred_lmod$DEATH_EVENT ~ heart_disease_test_pred_lmod$predict, plot=TRUE, print.auc=TRUE, col="green", lwd=3, legacy.axes=TRUE, main="ROC Curves")
+knnROC <- roc(heart_disease_test_filtered_y ~ as.integer(heart_disease_knn), plot=TRUE, print.auc=TRUE, col="blue", lwd=3, legacy.axes=TRUE, main="ROC Curves", add=TRUE, print.auc.y = .4)
+rfROC <- roc(heart_disease_test_pred_rf$DEATH_EVENT ~ as.integer(heart_disease_test_pred_rf$pred), plot=TRUE, print.auc=TRUE, col="red", lwd=3, legacy.axes=TRUE, main="ROC Curves", add=TRUE, print.auc.y=.8)
+```
+
+The Receiver Operating Characteristic (ROC) curve plot shows the performance of classification models at all classification thresholds. This curve plots two parameters: True Positive (Y-axis) and False Positive (X-axis) Rate. The ROC curves is useful to visualize and compare the performance of classifier methods. This ROC curve displays that the Random Forest model, with an accuracy percentage of 84.6%, performed the best in comparison to the logistic regression and KNN model. In conclusion, the Random Forest model is the best model to accurately predict mortality caused by Heart Failure.
+
